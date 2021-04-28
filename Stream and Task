@@ -1,0 +1,125 @@
+//------
+//set context 
+//----
+use role sysadmin;
+use warehouse compute_wh;
+use database demo_db;
+//use schema public;
+//craete schema 
+create schema NETFLIX_STREAMS_AND_TASKS;
+use schema NETFLIX_STREAMS_AND_TASKS;
+//create tables
+create or replace table 
+netflix_rating_events(
+raw_data variant
+);
+
+create or replace table
+netflix_rating(
+show_id number,
+show_title string,
+rating number);
+
+create or replace table
+netflix_show(
+id number,
+title string);
+
+INSERT INTO 
+  NETFLIX_SHOW // Shows added in no particular order
+VALUES 
+  (0, 'BoJack Horseman'), // <--- This is the best show on Netflix
+  (1, 'Ozark'), 
+  (2, 'Master of None'), 
+  (3, 'Mindhunter'),  
+  (4, 'The Haunting of Hill House'), 
+  (5, 'Tiger King'), 
+  (6, 'Stranger Things');
+//--------
+//create 2 stream on netflix_rating_events table
+///---
+create or replace stream stream_a on table netflix_rating_events;
+create or replace stream stream_b on table netflix_rating_events;
+
+show streams;
+
+INSERT INTO NETFLIX_RATING_EVENTS(RAW_DATA) SELECT PARSE_JSON(' { "show_id": 0, "rating": 10 } ');
+
+select * from stream_a;
+select * from stream_b;
+
+INSERT INTO NETFLIX_RATING(SHOW_ID, SHOW_TITLE, RATING) (
+  SELECT 
+    NETFLIX_SHOW.ID AS SHOW_ID,
+    NETFLIX_SHOW.TITLE AS SHOW_TITLE,
+    STREAM_A.RAW_DATA:"rating" AS RATING
+  FROM
+    NETFLIX_SHOW RIGHT OUTER JOIN STREAM_A
+    ON NETFLIX_SHOW.ID = STREAM_A.RAW_DATA:"show_id"
+  WHERE
+    STREAM_A.RAW_DATA:"rating" IS NOT NULL
+);
+
+select * from stream_a; //only stream_a is consumed beause its part of DML operation in above insert command
+select * from stream_b;
+
+INSERT INTO NETFLIX_RATING_EVENTS(RAW_DATA) SELECT PARSE_JSON(' { "show_id": 1, "rating": 9 } ');
+INSERT INTO NETFLIX_RATING_EVENTS(RAW_DATA) SELECT PARSE_JSON(' { "show_id": 2, "rating": 8 } ');
+
+select * from stream_a;
+select * from stream_b;
+
+INSERT INTO NETFLIX_RATING(SHOW_ID, SHOW_TITLE, RATING) (
+  SELECT 
+    NETFLIX_SHOW.ID AS SHOW_ID,
+    NETFLIX_SHOW.TITLE AS SHOW_TITLE,
+    STREAM_A.RAW_DATA:"rating" AS RATING
+  FROM
+    NETFLIX_SHOW RIGHT OUTER JOIN STREAM_A
+    ON NETFLIX_SHOW.ID = STREAM_A.RAW_DATA:"show_id"
+  WHERE
+    STREAM_A.RAW_DATA:"rating" IS NOT NULL
+);
+select * from stream_a;
+select * from stream_b;
+select * from NETFLIX_RATING_EVENTS;
+
+delete from NETFLIX_RATING_EVENTS where raw_data:rating is not null;
+
+select * from stream_a;
+select * from stream_b;
+
+CREATE OR REPLACE TASK NETFLIX_RATINGS_EVENT_PROCESSOR
+  WAREHOUSE = compute_wh -- Add your warehouse here
+  SCHEDULE  = 'USING CRON * * * * * America/Chicago' // process new records every minute
+WHEN
+  SYSTEM$STREAM_HAS_DATA('STREAM_A')
+AS
+  INSERT INTO NETFLIX_RATING(SHOW_ID, SHOW_TITLE, RATING) (
+    SELECT 
+      NETFLIX_SHOW.ID AS SHOW_ID,
+      NETFLIX_SHOW.TITLE AS SHOW_TITLE,
+      STREAM_A.RAW_DATA:"rating" AS RATING
+    FROM
+      NETFLIX_SHOWS RIGHT OUTER JOIN STREAM_A
+      ON NETFLIX_SHOW.ID = STREAM_A.RAW_DATA:"show_id"
+    WHERE
+      STREAM_A.RAW_DATA:"rating" IS NOT NULL
+  );
+  
+//Task are suspended by default 
+use role accountadmin;
+grant execute task on account to role sysadmin;
+alter task NETFLIX_RATINGS_EVENT_PROCESSOR resume;
+
+select * from stream_a;
+select * from stream_b;
+INSERT INTO NETFLIX_RATING_EVENTS(RAW_DATA) SELECT PARSE_JSON(' { "show_id": 3, "rating": 8 } ');
+INSERT INTO NETFLIX_RATING_EVENTS(RAW_DATA) SELECT PARSE_JSON(' { "show_id": 4, "rating": 8 } ');
+INSERT INTO NETFLIX_RATING_EVENTS(RAW_DATA) SELECT PARSE_JSON(' { "show_id": 5, "rating": 7 } ');
+INSERT INTO NETFLIX_RATING_EVENTS(RAW_DATA) SELECT PARSE_JSON(' { "show_id": 6, "rating": 9 } ');
+INSERT INTO NETFLIX_RATING_EVENTS(RAW_DATA) SELECT PARSE_JSON(' { "platform": 9.75} ');
+
+select * from netflix_rating;
+
+select show_title,avg(rating) as rating_avg from netflix_rating group by show_title order by rating_avg desc; 
